@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Destructible Wall FPS Demo</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #333; color: white; font-family: sans-serif; }
+        canvas { display: block; cursor: crosshair; }
+        #instructions {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+        #instructions ul { margin: 5px 0 0 15px; padding: 0; }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <div id="instructions">
+        <strong>Controls:</strong>
+        <ul>
+            <li>WASD: Move</li>
+            <li>Mouse: Look Left/Right</li>
+            <li>Left Click: Shoot (Click screen to lock mouse)</li>
+            <li>ESC: Unlock mouse</li>
+        </ul>
+        Walls change color when hit and break after 3 hits.
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const instructions = document.getElementById('instructions');
+
+        // --- Game Settings ---
+        const screenWidth = window.innerWidth;
+        const screenHeight = window.innerHeight;
+        canvas.width = screenWidth;
+        canvas.height = screenHeight;
+
+        const map = [
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 1, 1, 0, 1, 0, 1, 1, 1, 1, 0, 1, 1, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+            [1, 1, 1, 0, 1, 1, 1, 0, 1, 0, 1, 1, 1, 1, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 1, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0, 1],
+            [1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+        ];
+        const mapWidth = map[0].length;
+        const mapHeight = map.length;
+
+        // Wall health - mirrors the map structure
+        // 0: unbreakable/empty, >0: health points
+        const wallHealth = [];
+        const MAX_WALL_HEALTH = 3; // Hits to destroy a wall
+        const wallColors = [
+            null, // 0: Empty
+            { r: 100, g: 100, b: 200 }, // 1: Default wall (Health 3)
+            { r: 100, g: 150, b: 150 }, // Damaged 1 (Health 2)
+            { r: 150, g: 100, b: 100 }, // Damaged 2 (Health 1)
+        ];
+
+        function initializeWallHealth() {
+            for (let y = 0; y < mapHeight; y++) {
+                wallHealth[y] = [];
+                for (let x = 0; x < mapWidth; x++) {
+                    if (map[y][x] === 1) {
+                        wallHealth[y][x] = MAX_WALL_HEALTH;
+                    } else {
+                        wallHealth[y][x] = 0; // 0 health for empty space or other tile types
+                    }
+                }
+            }
+        }
+
+        // --- Player State ---
+        const player = {
+            x: 2.5,
+            y: 2.5,
+            dirX: -1, // Initial direction vector
+            dirY: 0,
+            planeX: 0, // Camera plane vector (orthogonal to dir)
+            planeY: 0.66, // Determines field of view (FOV)
+            moveSpeed: 0.05,
+            rotSpeed: 0.03
+        };
+
+        // --- Input State ---
+        const keys = {};
+        let mouseDeltaX = 0;
+        let pointerLocked = false;
+
+        // --- Game Loop ---
+        let lastTime = 0;
+        function gameLoop(timestamp) {
+            const deltaTime = (timestamp - lastTime) / 1000; // Time in seconds
+            lastTime = timestamp;
+
+            update(deltaTime);
+            render();
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // --- Update Function ---
+        function update(deltaTime) {
+            const currentMoveSpeed = player.moveSpeed // * deltaTime * 60; // Adjust speed based on frame rate
+            const currentRotSpeed = player.rotSpeed // * deltaTime * 60;
+
+            // Mouse look rotation
+            if (pointerLocked && mouseDeltaX !== 0) {
+                const rot = mouseDeltaX * currentRotSpeed * 0.1; // Adjust sensitivity
+                const oldDirX = player.dirX;
+                player.dirX = player.dirX * Math.cos(-rot) - player.dirY * Math.sin(-rot);
+                player.dirY = oldDirX * Math.sin(-rot) + player.dirY * Math.cos(-rot);
+                const oldPlaneX = player.planeX;
+                player.planeX = player.planeX * Math.cos(-rot) - player.planeY * Math.sin(-rot);
+                player.planeY = oldPlaneX * Math.sin(-rot) + player.planeY * Math.cos(-rot);
+                mouseDeltaX = 0; // Reset delta after processing
+            }
+
+            // Movement (WASD)
+            let moveX = 0;
+            let moveY = 0;
+
+            if (keys['w']) {
+                moveX += player.dirX;
+                moveY += player.dirY;
+            }
+            if (keys['s']) {
+                moveX -= player.dirX;
+                moveY -= player.dirY;
+            }
+            // Strafing
+            if (keys['a']) {
+                moveX += player.planeX; // Use plane vector for strafing
+                moveY += player.planeY;
+            }
+            if (keys['d']) {
+                moveX -= player.planeX;
+                moveY -= player.planeY;
+            }
+
+            // Normalize movement vector to prevent faster diagonal movement
+            const moveMagnitude = Math.sqrt(moveX * moveX + moveY * moveY);
+            if (moveMagnitude > 0) {
+                moveX = (moveX / moveMagnitude) * currentMoveSpeed;
+                moveY = (moveY / moveMagnitude) * currentMoveSpeed;
+            }
+
+           // Collision detection (simple)
+            const nextX = player.x + moveX;
+            const nextY = player.y + moveY;
+            const margin = 0.1; // Small margin to avoid getting stuck
+
+            if (map[Math.floor(player.y)][Math.floor(nextX + Math.sign(moveX) * margin)] === 0) {
+                player.x = nextX;
+            }
+            if (map[Math.floor(nextY + Math.sign(moveY) * margin)][Math.floor(player.x)] === 0) {
+                player.y = nextY;
+            }
+        }
+
+        // --- Rendering Function ---
+        function render() {
+            // Clear screen / Draw floor and ceiling
+            ctx.fillStyle = '#444'; // Ceiling color
+            ctx.fillRect(0, 0, screenWidth, screenHeight / 2);
+            ctx.fillStyle = '#888'; // Floor color
+            ctx.fillRect(0, screenHeight / 2, screenWidth, screenHeight / 2);
+
+            // Raycasting loop
+            for (let x = 0; x < screenWidth; x++) {
+                // Calculate ray position and direction
+                const cameraX = 2 * x / screenWidth - 1; // x-coordinate in camera space (-1 to 1)
+                const rayDirX = player.dirX + player.planeX * cameraX;
+                const rayDirY = player.dirY + player.planeY * cameraX;
+
+                // Which box of the map we're in
+                let mapX = Math.floor(player.x);
+                let mapY = Math.floor(player.y);
+
+                // Length of ray from current position to next x or y-side
+                let sideDistX;
+                let sideDistY;
+
+                // Length of ray from one x or y-side to next x or y-side
+                // Avoid division by zero
+                 const deltaDistX = (rayDirY === 0) ? 1e30 : Math.abs(1 / rayDirX);
+                 const deltaDistY = (rayDirX === 0) ? 1e30 : Math.abs(1 / rayDirY);
+                let perpWallDist;
+
+                // What direction to step in x or y-direction ( +1 or -1)
+                let stepX;
+                let stepY;
+
+                let hit = 0; // Was a wall hit?
+                let side; // Was a NS or a EW wall hit?
+
+                // Calculate step and initial sideDist
+                if (rayDirX < 0) {
+                    stepX = -1;
+                    sideDistX = (player.x - mapX) * deltaDistX;
+                } else {
+                    stepX = 1;
+                    sideDistX = (mapX + 1.0 - player.x) * deltaDistX;
+                }
+                if (rayDirY < 0) {
+                    stepY = -1;
+                    sideDistY = (player.y - mapY) * deltaDistY;
+                } else {
+                    stepY = 1;
+                    sideDistY = (mapY + 1.0 - player.y) * deltaDistY;
+                }
+
+                // Perform DDA (Digital Differential Analysis)
+                while (hit === 0) {
+                    // Jump to next map square, OR in x-direction, OR in y-direction
+                    if (sideDistX < sideDistY) {
+                        sideDistX += deltaDistX;
+                        mapX += stepX;
+                        side = 0; // EW wall
+                    } else {
+                        sideDistY += deltaDistY;
+                        mapY += stepY;
+                        side = 1; // NS wall
+                    }
+                    // Check if ray has hit a wall
+                    if (mapX < 0 || mapX >= mapWidth || mapY < 0 || mapY >= mapHeight) break; // Out of bounds
+                    if (map[mapY][mapX] > 0) hit = 1;
+                }
+
+                 if (hit > 0) {
+                    // Calculate distance projected on camera direction (Euclidean distance would give fisheye effect)
+                    if (side === 0) {
+                        perpWallDist = (mapX - player.x + (1 - stepX) / 2) / rayDirX;
+                    } else {
+                        perpWallDist = (mapY - player.y + (1 - stepY) / 2) / rayDirY;
+                    }
+                     // Prevent division by zero or extremely close walls
+                    if (perpWallDist <= 0.01) perpWallDist = 0.01;
+
+
+                    // Calculate height of line to draw on screen
+                    const lineHeight = Math.floor(screenHeight / perpWallDist);
+
+                    // Calculate lowest and highest pixel to fill in current stripe
+                    let drawStart = -lineHeight / 2 + screenHeight / 2;
+                    if (drawStart < 0) drawStart = 0;
+                    let drawEnd = lineHeight / 2 + screenHeight / 2;
+                    if (drawEnd >= screenHeight) drawEnd = screenHeight - 1;
+
+                    // Choose wall color based on health
+                    const health = wallHealth[mapY][mapX];
+                    let wallColor = { r: 50, g: 50, b: 50 }; // Default error color
+                    if (health > 0 && health <= MAX_WALL_HEALTH) {
+                         wallColor = wallColors[health];
+                    }
+
+
+                    // Add shading based on side (NS vs EW) and distance
+                    let shadeFactor = 1.0 - Math.min(perpWallDist / 10, 1); // Dimmer further away
+                    if (side === 1) shadeFactor *= 0.7; // Make NS walls darker
+
+                    const r = Math.floor(wallColor.r * shadeFactor);
+                    const g = Math.floor(wallColor.g * shadeFactor);
+                    const b = Math.floor(wallColor.b * shadeFactor);
+                    ctx.fillStyle = `rgb(${r},${g},${b})`;
+
+                    // Draw the vertical stripe
+                    ctx.fillRect(x, drawStart, 1, drawEnd - drawStart + 1);
+                }
+            }
+
+             // Draw crosshair
+            const crosshairSize = 10;
+            const centerX = screenWidth / 2;
+            const centerY = screenHeight / 2;
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(centerX - crosshairSize, centerY);
+            ctx.lineTo(centerX + crosshairSize, centerY);
+            ctx.moveTo(centerX, centerY - crosshairSize);
+            ctx.lineTo(centerX, centerY + crosshairSize);
+            ctx.stroke();
+        }
+
+        // --- Shooting Logic ---
+        function shoot() {
+             if (!pointerLocked) return; // Can only shoot when mouse is locked
+
+            // Cast a ray straight forward from the player's perspective (center of the screen)
+            const rayDirX = player.dirX;
+            const rayDirY = player.dirY;
+
+            let mapX = Math.floor(player.x);
+            let mapY = Math.floor(player.y);
+
+            let sideDistX, sideDistY;
+            const deltaDistX = (rayDirY === 0) ? 1e30 : Math.abs(1 / rayDirX);
+            const deltaDistY = (rayDirX === 0) ? 1e30 : Math.abs(1 / rayDirY);
+            let stepX, stepY;
+            let hit = 0;
+            let hitMapX, hitMapY; // Store the coordinates of the hit wall
+            const maxShootDist = 10; // Maximum shooting distance
+            let currentDist = 0;
+
+            if (rayDirX < 0) { stepX = -1; sideDistX = (player.x - mapX) * deltaDistX; }
+            else { stepX = 1; sideDistX = (mapX + 1.0 - player.x) * deltaDistX; }
+            if (rayDirY < 0) { stepY = -1; sideDistY = (player.y - mapY) * deltaDistY; }
+            else { stepY = 1; sideDistY = (mapY + 1.0 - player.y) * deltaDistY; }
+
+            while (hit === 0 && currentDist < maxShootDist) {
+                if (sideDistX < sideDistY) {
+                    currentDist = sideDistX;
+                    sideDistX += deltaDistX;
+                    mapX += stepX;
+                } else {
+                     currentDist = sideDistY;
+                    sideDistY += deltaDistY;
+                    mapY += stepY;
+                }
+                if (mapX < 0 || mapX >= mapWidth || mapY < 0 || mapY >= mapHeight) break;
+                if (map[mapY][mapX] > 0) {
+                     hit = 1;
+                     hitMapX = mapX;
+                     hitMapY = mapY;
+                }
+            }
+
+            // If a wall was hit within range
+             if (hit === 1 && wallHealth[hitMapY] && wallHealth[hitMapY][hitMapX] > 0) {
+                 console.log(`Hit wall at [${hitMapX}, ${hitMapY}] - Health before: ${wallHealth[hitMapY][hitMapX]}`);
+                 wallHealth[hitMapY][hitMapX]--; // Decrease health
+                 console.log(`Health after: ${wallHealth[hitMapY][hitMapX]}`);
+
+                 if (wallHealth[hitMapY][hitMapX] <= 0) {
+                     console.log(`Wall at [${hitMapX}, ${hitMapY}] destroyed!`);
+                     map[hitMapY][hitMapX] = 0; // Destroy the wall (make it empty space)
+                 }
+             } else if (hit === 1) {
+                console.log(`Hit indestructible wall or already destroyed at [${hitMapX}, ${hitMapY}]`);
+             } else {
+                 console.log("Missed or hit out of range.");
+             }
+        }
+
+
+        // --- Event Listeners ---
+        window.addEventListener('keydown', (e) => { keys[e.key.toLowerCase()] = true; });
+        window.addEventListener('keyup', (e) => { keys[e.key.toLowerCase()] = false; });
+
+        canvas.addEventListener('click', () => {
+            if (!pointerLocked) {
+                canvas.requestPointerLock()
+                    .then(() => { console.log("Pointer locked"); })
+                    .catch(err => { console.error("Cannot lock pointer:", err); });
+            } else {
+                // Only shoot if pointer is already locked (prevents shooting on the click *to* lock)
+                 shoot();
+            }
+        });
+
+        document.addEventListener('pointerlockchange', () => {
+            if (document.pointerLockElement === canvas) {
+                pointerLocked = true;
+                instructions.style.display = 'none'; // Hide instructions when locked
+                document.addEventListener("mousemove", handleMouseMove, false);
+            } else {
+                pointerLocked = false;
+                instructions.style.display = 'block'; // Show instructions when unlocked
+                document.removeEventListener("mousemove", handleMouseMove, false);
+                 // Clear keys on unlock to prevent stuck movement
+                for(const key in keys) { keys[key] = false; }
+            }
+        });
+
+        // Handle pointer lock errors (e.g., user pressing Esc twice quickly)
+        document.addEventListener('pointerlockerror', (e) => {
+            console.error('Pointer lock error:', e);
+            pointerLocked = false;
+            instructions.style.display = 'block';
+            document.removeEventListener("mousemove", handleMouseMove, false);
+        });
+
+        function handleMouseMove(e) {
+            if (pointerLocked) {
+                mouseDeltaX += e.movementX || 0; // Accumulate mouse movement
+            }
+        }
+
+        // Handle window resizing
+        window.addEventListener('resize', () => {
+            screenWidth = window.innerWidth;
+            screenHeight = window.innerHeight;
+            canvas.width = screenWidth;
+            canvas.height = screenHeight;
+            // No need to re-render immediately, game loop handles it
+        });
+
+        // --- Initialization ---
+        initializeWallHealth();
+        requestAnimationFrame(gameLoop);
+
+    </script>
+</body>
+</html>
