@@ -3,10 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Voxel FPS Demo</title>
+    <title>Destructible Wall FPS Demo - Improved</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #59b7ff; /* Sky blue */ color: white; font-family: sans-serif; }
-        canvas { display: block; cursor: crosshair; background-color: #59b7ff; }
+        body { margin: 0; overflow: hidden; background-color: #333; color: white; font-family: sans-serif; }
+        canvas { display: block; cursor: crosshair; background-color: #000; }
         #instructions {
             position: absolute;
             top: 10px;
@@ -15,31 +15,39 @@
             padding: 10px;
             border-radius: 5px;
             font-size: 14px;
-            color: white;
             z-index: 10;
         }
         #instructions ul { margin: 5px 0 0 15px; padding: 0; }
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 24px;
+            color: white;
+            z-index: 20;
+        }
     </style>
 </head>
 <body>
+    <div id="loading">Loading Assets...</div>
     <canvas id="gameCanvas"></canvas>
-    <div id="instructions">
+    <div id="instructions" style="display: none;"> <!-- Hide initially -->
         <strong>Controls:</strong>
         <ul>
-            <li>WASD: Move Horizontally</li>
-            <li>Space: Move Up</li>
-            <li>Shift: Move Down</li>
-            <li>Mouse: Look Around (Pitch/Yaw)</li>
-            <li>Left Click: Destroy Voxel (Click screen to lock mouse)</li>
+            <li>WASD: Move</li>
+            <li>Mouse: Look Left/Right</li>
+            <li>Left Click: Shoot (Click screen to lock mouse)</li>
             <li>ESC: Unlock mouse</li>
         </ul>
-        Aim at a voxel and click to damage/destroy it. Performance may vary!
+        Walls get damaged and break after 3 hits.
     </div>
 
     <script>
         const canvas = document.getElementById('gameCanvas');
-        const ctx = canvas.getContext('2d', { alpha: false }); // Optimize by disabling alpha buffer if not needed
+        const ctx = canvas.getContext('2d');
         const instructions = document.getElementById('instructions');
+        const loadingScreen = document.getElementById('loading');
 
         // --- Game Settings ---
         let screenWidth = window.innerWidth;
@@ -47,142 +55,125 @@
         canvas.width = screenWidth;
         canvas.height = screenHeight;
 
-        const RENDER_SCALE = 0.5; // Render at lower resolution for performance
-        let renderWidth = Math.floor(screenWidth * RENDER_SCALE);
-        let renderHeight = Math.floor(screenHeight * RENDER_SCALE);
-        // We'll draw to an offscreen canvas then scale up
-        const offscreenCanvas = new OffscreenCanvas(renderWidth, renderHeight);
-        const offscreenCtx = offscreenCanvas.getContext('2d', { alpha: false });
-
-
-        // --- World Settings ---
-        const worldWidth = 32;
-        const worldHeight = 32; // Vertical dimension
-        const worldDepth = 32;
-        const voxels = new Uint8Array(worldWidth * worldHeight * worldDepth); // Use TypedArray for efficiency
-        const voxelHealth = new Uint8Array(worldWidth * worldHeight * worldDepth);
-        const MAX_VOXEL_HEALTH = 4;
-        const RENDER_DISTANCE = 20; // Max distance to cast rays
-
-        const voxelTypes = {
-            AIR: 0,
-            DIRT: 1,
-            GRASS: 2,
-            STONE: 3,
-            WOOD: 4,
+        // --- Texture Loading ---
+        const TEX_WIDTH = 64;
+        const TEX_HEIGHT = 64;
+        const textures = [];
+        const textureSources = {
+            // Base64 encoded 64x64 textures
+            brick: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAJDSURBVHhe7drBbgJBFAbgLzMskpIfySFUFBoH4sBx6BgUBIPEgXgQCQKFI3AoUKGokBD/YJKbh7cv8/ZmpsnLJGd3Z2fn2z1+v18X+N/3A4yqWq0GEYhABCIQgQhEIAIRiEAEIhCBCEQgAhGIIAQiEIEMRCBzhEAEIhCBCEQgAhGIIAQiEIEMRCAOEYhABCIQgQhEIAIRiEAEIhCBCEQQAhHIQAYiEIEMRCAOEcgzIlqtau0/76/Xaw/jcfz6/h2v9/vj7n7vY8+3Z7//Yv6xCTGIAARiEAEIhCBCEQgAhGIQAYiEIEIRBACEchABjKQgQxEIAIRiEAEIhCBCEQQAhGIQAQikIEMZCADOUSAEJEIRCACTUQgAhGIQAQikIEMZCADGchABiIQgQxEIAIRiEAEIogAIWKdA/o6/sH6/f4+Tvf79Xn8eBw30wH8y7t4u91uj/35/m0/+328JkAEIhCBCEQgAhGIQAQiEIEIRCAChGg/wG130x+EIAIRiECmIhCBCEQgAhGIAARiEAEZykCGMhCBCEQgAhnIQAaio/8Ag+n0+Xz+8/X+9Xw+389/HyACEYhABCIQgQhEIAIRiEAEIhCBCAEIxCACHpCADGQIhCAChIhsIAIxiEAEIhCBCEQgAhGIQAQikIEMZCADIQiBCGSAgQxU/6/9x/A/p/f79c9/jG9w9/p8Pn8Xf+/398fB7/fb/e/jfgEjEIEIRCACGchABiKQgQxEIAIRiEAEIoiAFf+l7QeYn/YDRCAChLhOgAhEIAIRiEAGMpCBDGQgA/8B+kLSDIu4yLAAAAAASUVORK5CYII=",
+            stone: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAIUSURBVHhe7dsxagJBEMbxqSiWWiwST2GolRBshIBNsBErLQRBsAi2gnuAxiLoFfAYago1tbHZTQoFf8CXZeZl9rZvZnf5IS9spLHZn5/t7w+v1+uC/6b7AYZXq9UYQSAEEAggBBBIgBBCIARBIIAQCCAEEAggBEIgBBIIgRBIIARBIIAQCCAEEAggBEIgBBIIgRBIIARAIIAQSAAEQiAEggBCIARBIHUEgBBCIARBIASCEEggBEIgBBIIgRBIIRQ/hKDRavU/v+PxeNyPN+vxOM/Hs+N2uy2P87Ozd+9jn8dnf/oTjG4IEAggBBIIgRBAIIQQCCAEEAggBEIgBEHAEEAggBBIAASBEAgghBAIIAQSCEEAghBAIIARBIIQQCCAEEAghBEIggBEJAIIQSAE0EglBAIAQSCEEAghBAIIAQSCEEIxCAAEAgghBAgRCCAEAggBAIIgRBIAQSCEIggBIJgCBCCCQQgEEAIBAEEQgCEEEhQ7Qv06/g76/F4PM/3u91us58P8Kfn8fb7/bf7n+/f7mf/D68JQCAEEAggBEIggBBIAAQhEALB1p+g43a7/aEQCCAEEggghBAIIAQCIIQQCCAEEggBEIQQiEAEgpAgCEIghBBIQAghBCQ4/gNMT7fb7X7+uL/fH7fb9b8PIAQCCAEEggBCIAQSCAEEQiAEgRAIBAEEQiAEQiCEECRCCAQhECKyggBCIAQSCAEEQiAEQSAEEAggBEIgBBIIgRBAIISAF0IgBEJA+v/1n8M/Lvd7vf75j/EPbj9eb9f/Hv+x398fd+f1et3/v+4nGAgBBIIAQiCEEAghBEIgBBIIgRBAgAr+qW0/wPx0H0AgBAKIuI5AIIQQCCAEgkAIhBBCIPwH61lHjLp5iZgAAAAASUVORK5CYII=",
+            weapon: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAEKSURBVHhe7dqxDQJBEAXQv91qK9hKj8HULhAKx9Rqa2OlhQxEQgQZ/pA/eUD2M8sMFwAAAAAAAKaI/Y5+C79/fAJeAAAAgDEgQgAAAABA7A2IACAAAEAEAAAIACAAAEAEAAAIACAAAEAEAAAIACAAAEAEAAAIACAAAEAEAAAIACAAAEAEAAAIACAAAEAEAAAIACAAAEAEAAAIACAAAEAEAAAIACAAAEAEAAAIACAAAEAEAAAIACAAAEAEAAAIACAAAEAEAAAIACAAAEAEAAAIACAAAEAEAAAIACAAAEAEAAAIACAAAEAEAAAAYJ7od/w/ff95/iM4AgAAAADuGogAAgAAACA2BkQAAEAAAIACAAAEAAAIACAAAEAEAAAIACAAAEAEAAAIACAAAEAEAAAIACAAAEAEAAAAYJ74/gIqV65D2Wf89QAAAABJRU5ErkJggg==" // Simple placeholder
         };
+        const texturePromises = [];
+        let texturesLoaded = false;
+        let floorPattern = null;
+        let weaponImg = null;
 
-        const voxelColors = [
-            null, // Air
-            { r: 139, g: 69, b: 19 },  // Dirt (Brown)
-            { r: 34, g: 139, b: 34 },  // Grass (ForestGreen)
-            { r: 128, g: 128, b: 128 },// Stone (Gray)
-            { r: 160, g: 82, b: 45 },  // Wood (Sienna)
-        ];
-        const healthColors = [ // Tints towards red as health decreases
-            { r: 255, g: 100, b: 100 }, // Health 1
-            { r: 255, g: 180, b: 100 }, // Health 2
-            { r: 200, g: 200, b: 100 }, // Health 3
-            // Health 4 uses base color
-        ];
+        function loadTextures() {
+            textures[0] = null; // Index 0 is no texture (air)
+            let textureCount = 1; // Start from 1
 
-
-        function getVoxelIndex(x, y, z) {
-             if (x < 0 || x >= worldWidth || y < 0 || y >= worldHeight || z < 0 || z >= worldDepth) {
-                return -1; // Out of bounds
-            }
-            // Y is height, so it changes fastest in typical nested loops, but here XZ is the plane
-            return Math.floor(x) + Math.floor(z) * worldWidth + Math.floor(y) * worldWidth * worldDepth;
-        }
-
-        function getVoxel(x, y, z) {
-            const index = getVoxelIndex(x, y, z);
-            return index === -1 ? voxelTypes.AIR : voxels[index];
-        }
-
-        function setVoxel(x, y, z, type, health = MAX_VOXEL_HEALTH) {
-            const index = getVoxelIndex(x, y, z);
-            if (index !== -1) {
-                voxels[index] = type;
-                voxelHealth[index] = type === voxelTypes.AIR ? 0 : health;
-            }
-        }
-
-        function damageVoxel(x, y, z) {
-             const index = getVoxelIndex(x, y, z);
-             if (index !== -1 && voxels[index] !== voxelTypes.AIR) {
-                 if (voxelHealth[index] > 0) {
-                     voxelHealth[index]--;
-                     console.log(`Voxel at [${x},${y},${z}] health: ${voxelHealth[index]}`);
-                     if (voxelHealth[index] <= 0) {
-                         console.log(`Voxel at [${x},${y},${z}] destroyed!`);
-                         setVoxel(x, y, z, voxelTypes.AIR, 0);
-                         return true; // Was destroyed
-                     }
-                 }
-                 return false; // Was damaged but not destroyed
-             }
-             return false; // No voxel to damage or already air
-        }
-
-
-        // Simple world generation
-        function createWorld() {
-            console.log("Creating world...");
-            for (let y = 0; y < worldHeight; y++) {
-                for (let z = 0; z < worldDepth; z++) {
-                    for (let x = 0; x < worldWidth; x++) {
-                        const height = Math.floor(worldHeight / 3);
-                         let voxelType = voxelTypes.AIR;
-                         let health = 0;
-
-                        if (y < height) {
-                            voxelType = voxelTypes.STONE;
-                        } else if (y === height) {
-                             voxelType = voxelTypes.GRASS;
-                        }
-                        // Add some random pillars
-                        if (voxelType === voxelTypes.AIR && Math.random() < 0.005 && y < worldHeight * 0.6) {
-                             if (x > 2 && x < worldWidth - 2 && z > 2 && z < worldDepth - 2) { // Avoid edges
-                                for (let py = y; py < y + Math.floor(Math.random() * 5) + 3; py++) {
-                                     if (py < worldHeight) setVoxel(x, py, z, voxelTypes.WOOD);
-                                }
-                             }
+            for (const key in textureSources) {
+                const img = new Image();
+                const currentTexIndex = textureCount++;
+                const promise = new Promise((resolve, reject) => {
+                    img.onload = () => {
+                        console.log(`Loaded texture: ${key}`);
+                        if (key === 'weapon') {
+                             weaponImg = img;
                         } else {
-                             setVoxel(x, y, z, voxelType);
+                             textures[currentTexIndex] = img;
+                              // Create floor pattern from the first wall texture (e.g., brick)
+                             if (key === 'brick' && !floorPattern) {
+                                 const patternCanvas = document.createElement('canvas');
+                                 patternCanvas.width = TEX_WIDTH / 2; // Smaller pattern
+                                 patternCanvas.height = TEX_HEIGHT / 2;
+                                 const patternCtx = patternCanvas.getContext('2d');
+                                 patternCtx.drawImage(img, 0, 0, TEX_WIDTH, TEX_HEIGHT, 0, 0, patternCanvas.width, patternCanvas.height);
+                                 floorPattern = ctx.createPattern(patternCanvas, 'repeat');
+                                 console.log("Created floor pattern.");
+                             }
                         }
+                        resolve();
+                    };
+                    img.onerror = (err) => {
+                        console.error(`Failed to load texture: ${key}`, err);
+                        reject(err);
+                    };
+                    img.src = textureSources[key];
+                });
+                texturePromises.push(promise);
+            }
+
+            // Map texture keys to indices for the map array
+            const textureMapIndices = { brick: 1, stone: 2 }; // Match textureSources keys
+
+            return { texturePromises, textureMapIndices };
+        }
+
+        // --- Map Definition ---
+        // 0: Empty Space
+        // 1: Brick Wall Texture
+        // 2: Stone Wall Texture
+        const map = [
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            [1, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 2, 2, 0, 2, 0, 1, 1, 1, 1, 0, 1, 1, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 2],
+            [1, 1, 1, 0, 1, 1, 1, 0, 2, 0, 1, 1, 1, 1, 0, 2],
+            [1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 2, 1, 1, 0, 1, 0, 2, 1, 1, 1, 1, 1, 0, 1],
+            [1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 1, 1, 0, 1, 0, 1, 2, 2, 2, 2, 0, 1, 1, 1, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2],
+            [1, 0, 1, 1, 1, 1, 0, 2, 1, 1, 1, 1, 1, 1, 0, 2],
+            [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+        ];
+        const mapWidth = map[0].length;
+        const mapHeight = map.length;
+        const wallHealth = [];
+        const MAX_WALL_HEALTH = 3; // Hits to destroy a wall
+
+        function initializeWallHealth() {
+            for (let y = 0; y < mapHeight; y++) {
+                wallHealth[y] = [];
+                for (let x = 0; x < mapWidth; x++) {
+                    if (map[y][x] > 0) { // Any non-zero value is a wall
+                        wallHealth[y][x] = MAX_WALL_HEALTH;
+                    } else {
+                        wallHealth[y][x] = 0;
                     }
                 }
             }
-             console.log("World created.");
+             console.log("Wall health initialized.");
         }
 
         // --- Player State ---
         const player = {
-            x: worldWidth / 2 + 0.5,
-            y: worldHeight / 3 + 2.5, // Start above ground
-            z: worldDepth / 2 + 0.5,
-            yaw: Math.PI, // Look forward initially (radians)
-            pitch: 0,   // Look straight ahead (radians)
-            speed: 0.08,
-            rotSpeed: 0.002, // Mouse sensitivity
-            bobbingAngle: 0,
-            bobbingAmount: 0.02,
-            isMoving: false,
-            height: 1.6,
-            width: 0.4
+            x: 2.5,
+            y: 2.5,
+            dirX: -1, dirY: 0,
+            planeX: 0, planeY: 0.66,
+            moveSpeed: 0.05,
+            rotSpeed: 0.03
         };
 
         // --- Input State ---
         const keys = {};
         let mouseDeltaX = 0;
-        let mouseDeltaY = 0;
         let pointerLocked = false;
 
         // --- Game Loop ---
         let lastTime = 0;
         function gameLoop(timestamp) {
-            const deltaTime = Math.min(0.05, (timestamp - lastTime) / 1000); // Delta time in seconds, capped to prevent jumps
+            if (!texturesLoaded) {
+                requestAnimationFrame(gameLoop); // Wait if textures aren't ready
+                return;
+            }
+
+            const deltaTime = (timestamp - lastTime) / 1000;
             lastTime = timestamp;
 
             update(deltaTime);
@@ -193,308 +184,224 @@
 
         // --- Update Function ---
         function update(deltaTime) {
-            // Mouse look
-            if (pointerLocked) {
-                player.yaw += mouseDeltaX * player.rotSpeed;
-                player.pitch -= mouseDeltaY * player.rotSpeed;
+            const currentMoveSpeed = player.moveSpeed;
+            const currentRotSpeed = player.rotSpeed;
 
-                // Clamp pitch to prevent looking upside down/too far down
-                player.pitch = Math.max(-Math.PI / 2 + 0.1, Math.min(Math.PI / 2 - 0.1, player.pitch));
-
+            // Mouse look rotation
+            if (pointerLocked && mouseDeltaX !== 0) {
+                const rot = mouseDeltaX * currentRotSpeed * 0.1;
+                const oldDirX = player.dirX;
+                player.dirX = player.dirX * Math.cos(-rot) - player.dirY * Math.sin(-rot);
+                player.dirY = oldDirX * Math.sin(-rot) + player.dirY * Math.cos(-rot);
+                const oldPlaneX = player.planeX;
+                player.planeX = player.planeX * Math.cos(-rot) - player.planeY * Math.sin(-rot);
+                player.planeY = oldPlaneX * Math.sin(-rot) + player.planeY * Math.cos(-rot);
                 mouseDeltaX = 0;
-                mouseDeltaY = 0;
             }
 
-            // Movement direction based on yaw
-            const cosYaw = Math.cos(player.yaw);
-            const sinYaw = Math.sin(player.yaw);
+            // Movement (WASD)
             let moveX = 0;
-            let moveZ = 0;
             let moveY = 0;
+            if (keys['w']) { moveX += player.dirX; moveY += player.dirY; }
+            if (keys['s']) { moveX -= player.dirX; moveY -= player.dirY; }
+            if (keys['a']) { moveX += player.planeX; moveY += player.planeY; } // Strafe uses plane vector
+            if (keys['d']) { moveX -= player.planeX; moveY -= player.planeY; }
 
-            if (keys['w']) { moveX += sinYaw; moveZ += cosYaw; }
-            if (keys['s']) { moveX -= sinYaw; moveZ -= cosYaw; }
-            if (keys['a']) { moveX += cosYaw; moveZ -= sinYaw; }
-            if (keys['d']) { moveX -= cosYaw; moveZ += sinYaw; }
-            if (keys[' ']) { moveY += 1; } // Space for Up
-            if (keys['shift']) { moveY -= 1; } // Shift for Down
-
-            player.isMoving = (moveX !== 0 || moveZ !== 0 || moveY !== 0);
-
-            // Normalize horizontal movement
-            const horizMagnitude = Math.sqrt(moveX * moveX + moveZ * moveZ);
-            if (horizMagnitude > 0) {
-                moveX = (moveX / horizMagnitude) * player.speed;
-                moveZ = (moveZ / horizMagnitude) * player.speed;
+            const moveMagnitude = Math.sqrt(moveX * moveX + moveY * moveY);
+            if (moveMagnitude > 0) {
+                moveX = (moveX / moveMagnitude) * currentMoveSpeed;
+                moveY = (moveY / moveMagnitude) * currentMoveSpeed;
             }
-             // Apply vertical speed
-            moveY *= player.speed;
 
-
-            // Collision Detection (Simple Point Check) - More robust would use AABB
-            const checkMargin = player.width / 2 + 0.01; // Check slightly ahead
+            // Collision detection
             const nextX = player.x + moveX;
-            const nextYHead = player.y + moveY + player.height * 0.8; // Check near head height
-            const nextYFeet = player.y + moveY + player.height * 0.1; // Check near feet
-            const nextZ = player.z + moveZ;
-
-            // Check X movement
-            if (getVoxel(nextX + Math.sign(moveX) * checkMargin, Math.floor(player.y + player.height*0.1), Math.floor(player.z)) === 0 &&
-                getVoxel(nextX + Math.sign(moveX) * checkMargin, Math.floor(player.y + player.height*0.9), Math.floor(player.z)) === 0) {
+            const nextY = player.y + moveY;
+            const margin = 0.1;
+            if (map[Math.floor(player.y)][Math.floor(nextX + Math.sign(moveX) * margin)] === 0) {
                 player.x = nextX;
             }
-            // Check Z movement
-            if (getVoxel(Math.floor(player.x), Math.floor(player.y + player.height*0.1), nextZ + Math.sign(moveZ) * checkMargin) === 0 &&
-                getVoxel(Math.floor(player.x), Math.floor(player.y + player.height*0.9), nextZ + Math.sign(moveZ) * checkMargin) === 0) {
-                player.z = nextZ;
-            }
-             // Check Y movement (Head and Feet) - Need careful checks to avoid getting stuck
-            if (moveY > 0) { // Moving Up
-                 if (getVoxel(Math.floor(player.x), Math.floor(nextYHead), Math.floor(player.z)) === 0) {
-                    player.y += moveY;
-                 }
-             } else if (moveY < 0) { // Moving Down
-                 if (getVoxel(Math.floor(player.x), Math.floor(nextYFeet), Math.floor(player.z)) === 0) {
-                    player.y += moveY;
-                 }
-             }
-
-
-            // Simple view bobbing
-            if (player.isMoving && moveY === 0) { // Only bob when moving horizontally
-                player.bobbingAngle += deltaTime * 10; // Speed of bob
-            } else {
-                 // Slowly return to center if not moving
-                 if (player.bobbingAngle !== 0) {
-                     player.bobbingAngle += (0 - player.bobbingAngle) * 0.1;
-                 }
+            if (map[Math.floor(nextY + Math.sign(moveY) * margin)][Math.floor(player.x)] === 0) {
+                player.y = nextY;
             }
         }
 
-
-         // --- Voxel Ray Tracing Function ---
-         // Based on "A Fast Voxel Traversal Algorithm for Ray Tracing" by Amanatides & Woo
-         function traceRay(startX, startY, startZ, dirX, dirY, dirZ) {
-             let currentX = Math.floor(startX);
-             let currentY = Math.floor(startY);
-             let currentZ = Math.floor(startZ);
-
-             const stepX = Math.sign(dirX);
-             const stepY = Math.sign(dirY);
-             const stepZ = Math.sign(dirZ);
-
-             // Avoid division by zero
-             const deltaX = (dirX === 0) ? 1e30 : Math.abs(1 / dirX);
-             const deltaY = (dirY === 0) ? 1e30 : Math.abs(1 / dirY);
-             const deltaZ = (dirZ === 0) ? 1e30 : Math.abs(1 / dirZ);
-
-             // Calculate initial tMax values
-             let tMaxX = (stepX > 0) ? (currentX + 1 - startX) * deltaX : (startX - currentX) * deltaX;
-             let tMaxY = (stepY > 0) ? (currentY + 1 - startY) * deltaY : (startY - currentY) * deltaY;
-             let tMaxZ = (stepZ > 0) ? (currentZ + 1 - startZ) * deltaZ : (startZ - currentZ) * deltaZ;
-
-             let distance = 0;
-             let hitFace = -1; // 0: X, 1: Y, 2: Z
-
-             while (distance < RENDER_DISTANCE) {
-                 if (tMaxX < tMaxY) {
-                     if (tMaxX < tMaxZ) {
-                         distance = tMaxX;
-                         tMaxX += deltaX;
-                         currentX += stepX;
-                         hitFace = 0;
-                     } else {
-                         distance = tMaxZ;
-                         tMaxZ += deltaZ;
-                         currentZ += stepZ;
-                         hitFace = 2;
-                     }
-                 } else {
-                     if (tMaxY < tMaxZ) {
-                         distance = tMaxY;
-                         tMaxY += deltaY;
-                         currentY += stepY;
-                         hitFace = 1;
-                     } else {
-                         distance = tMaxZ;
-                         tMaxZ += deltaZ;
-                         currentZ += stepZ;
-                         hitFace = 2;
-                     }
-                 }
-
-                 // Check bounds
-                 if (currentX < 0 || currentX >= worldWidth ||
-                     currentY < 0 || currentY >= worldHeight ||
-                     currentZ < 0 || currentZ >= worldDepth) {
-                     return null; // Ray left the world bounds
-                 }
-
-                 const voxelType = getVoxel(currentX, currentY, currentZ);
-                 if (voxelType !== voxelTypes.AIR) {
-                     // Hit! Return info
-                     return {
-                         x: currentX, y: currentY, z: currentZ,
-                         type: voxelType,
-                         distance: distance,
-                         face: hitFace // Which face was hit (for basic shading)
-                     };
-                 }
-             }
-             return null; // Hit nothing within render distance
-         }
-
-
         // --- Rendering Function ---
         function render() {
-            // Calculate camera direction vector
-            const cosPitch = Math.cos(player.pitch);
-            const sinPitch = Math.sin(player.pitch);
-            const cosYaw = Math.cos(player.yaw);
-            const sinYaw = Math.sin(player.yaw);
+            // 1. Draw Ceiling Gradient
+            const skyGradient = ctx.createLinearGradient(0, 0, 0, screenHeight / 2);
+            skyGradient.addColorStop(0, '#87CEEB'); // Light sky blue
+            skyGradient.addColorStop(1, '#ADD8E6'); // Lighter blue towards horizon
+            ctx.fillStyle = skyGradient;
+            ctx.fillRect(0, 0, screenWidth, screenHeight / 2);
 
-            const camDirX = sinYaw * cosPitch;
-            const camDirY = -sinPitch; // Y is up/down in our world
-            const camDirZ = cosYaw * cosPitch;
+            // 2. Draw Floor Pattern
+            if (floorPattern) {
+                ctx.fillStyle = floorPattern;
+                ctx.fillRect(0, screenHeight / 2, screenWidth, screenHeight / 2);
+            } else { // Fallback if pattern failed
+                ctx.fillStyle = '#8B4513'; // Brown floor
+                ctx.fillRect(0, screenHeight / 2, screenWidth, screenHeight / 2);
+            }
 
-            // Calculate camera plane (simple FOV calculation)
-            const fov = Math.PI / 3; // Field of view (60 degrees)
-            const aspectRatio = renderWidth / renderHeight;
-            // Right vector (cross product of dir and world up [0,1,0]) - simplified
-            const camPlaneX_X = cosYaw;
-            const camPlaneX_Z = -sinYaw;
-             // Up vector (cross product of right and dir) - derived carefully
-            const camPlaneY_X = -sinYaw * sinPitch;
-            const camPlaneY_Y = cosPitch;
-            const camPlaneY_Z = -cosYaw * sinPitch;
+            // 3. Raycasting for Walls
+            for (let x = 0; x < screenWidth; x++) {
+                const cameraX = 2 * x / screenWidth - 1;
+                const rayDirX = player.dirX + player.planeX * cameraX;
+                const rayDirY = player.dirY + player.planeY * cameraX;
 
-            // Bobbing offset
-            const bobOffset = player.isMoving ? Math.sin(player.bobbingAngle) * player.bobbingAmount : 0;
-            const camY = player.y + player.height / 2 + bobOffset; // Adjust camera height + bobbing
+                let mapX = Math.floor(player.x);
+                let mapY = Math.floor(player.y);
 
-             // Clear offscreen canvas (sky color)
-             offscreenCtx.fillStyle = '#59b7ff';
-             offscreenCtx.fillRect(0, 0, renderWidth, renderHeight);
+                let sideDistX, sideDistY;
+                const deltaDistX = (rayDirY === 0) ? 1e30 : Math.abs(1 / rayDirX);
+                const deltaDistY = (rayDirX === 0) ? 1e30 : Math.abs(1 / rayDirY);
+                let perpWallDist;
 
-             // Draw distance fog overlay (optional, cheap way to hide distant rendering cutoff)
-             const fogGradient = offscreenCtx.createLinearGradient(0, 0, 0, renderHeight);
-             fogGradient.addColorStop(0.4, "rgba(89, 183, 255, 0)"); // Sky color, transparent near
-             fogGradient.addColorStop(0.9, "rgba(89, 183, 255, 1)"); // Sky color, opaque far
-             offscreenCtx.fillStyle = fogGradient;
+                let stepX, stepY;
+                let hit = 0;
+                let side;
 
+                if (rayDirX < 0) { stepX = -1; sideDistX = (player.x - mapX) * deltaDistX; }
+                else { stepX = 1; sideDistX = (mapX + 1.0 - player.x) * deltaDistX; }
+                if (rayDirY < 0) { stepY = -1; sideDistY = (player.y - mapY) * deltaDistY; }
+                else { stepY = 1; sideDistY = (mapY + 1.0 - player.y) * deltaDistY; }
 
-            // --- Ray casting loop ---
-            for (let x = 0; x < renderWidth; x++) {
-                // Calculate ray direction for this screen column x and row y (center for now)
-                const normX = (2 * x / renderWidth - 1) * aspectRatio;
+                // DDA
+                while (hit === 0) {
+                    if (sideDistX < sideDistY) { sideDistX += deltaDistX; mapX += stepX; side = 0; }
+                    else { sideDistY += deltaDistY; mapY += stepY; side = 1; }
 
-                // Center Y for now, we render columns. Could do per-pixel for better vertical accuracy but SLOW.
-                const normY = 0; // (1 - 2 * y / renderHeight)
+                    if (mapX < 0 || mapX >= mapWidth || mapY < 0 || mapY >= mapHeight) break;
+                    if (map[mapY][mapX] > 0) hit = 1; // Hit a wall (any texture index > 0)
+                }
 
-                // Combine direction and plane vectors
-                const rayDirX = camDirX + camPlaneX_X * normX + camPlaneY_X * normY;
-                const rayDirY = camDirY + camPlaneY_Y * normY; // Only uses pitch component if normY=0
-                const rayDirZ = camDirZ + camPlaneX_Z * normX + camPlaneY_Z * normY;
+                if (hit > 0) {
+                    if (side === 0) { perpWallDist = (mapX - player.x + (1 - stepX) / 2) / rayDirX; }
+                    else { perpWallDist = (mapY - player.y + (1 - stepY) / 2) / rayDirY; }
+                    if (perpWallDist <= 0.01) perpWallDist = 0.01;
 
+                    const lineHeight = Math.floor(screenHeight / perpWallDist);
+                    let drawStart = -lineHeight / 2 + screenHeight / 2;
+                    if (drawStart < 0) drawStart = 0;
+                    let drawEnd = lineHeight / 2 + screenHeight / 2;
+                    if (drawEnd >= screenHeight) drawEnd = screenHeight - 1;
 
-                 // --- Trace the ray ---
-                 const hit = traceRay(player.x, camY, player.z, rayDirX, rayDirY, rayDirZ);
+                    // --- Texture Calculation ---
+                    const wallType = map[mapY][mapX];
+                    const texture = textures[wallType];
 
-                if (hit) {
-                    // Calculate perceived line height
-                    // Use perpendicular distance approximation (less accurate in true 3D but simpler)
-                    // A better way involves dot product, but let's keep it basic
-                    const perpDist = hit.distance * Math.abs(cosPitch); // Basic correction
-                    const lineHeight = Math.floor(renderHeight / (perpDist + 0.01)); // Add epsilon to avoid infinity
+                    if (texture) { // Check if texture exists
+                         // Calculate exact hit position on wall (0.0 to 1.0)
+                        let wallX;
+                        if (side === 0) wallX = player.y + perpWallDist * rayDirY;
+                        else wallX = player.x + perpWallDist * rayDirX;
+                        wallX -= Math.floor(wallX); // Fractional part = position on wall block
 
-                    // Calculate draw start/end points
-                    let drawStart = Math.floor(-lineHeight / 2 + renderHeight / 2);
-                    // Correct draw start based on player pitch (approximate)
-                    drawStart += Math.floor(player.pitch * renderHeight * 0.2); // Adjust vertical position based on pitch
-                    let drawEnd = drawStart + lineHeight;
+                        // Calculate X coordinate on the texture
+                        let texX = Math.floor(wallX * TEX_WIDTH);
+                        if (side === 0 && rayDirX > 0) texX = TEX_WIDTH - texX - 1; // Flip texture if needed
+                        if (side === 1 && rayDirY < 0) texX = TEX_WIDTH - texX - 1;
 
-                    // Clamp draw coordinates
-                    const clampedStart = Math.max(0, drawStart);
-                    const clampedEnd = Math.min(renderHeight -1, drawEnd);
+                        // Draw the textured slice
+                         ctx.drawImage(
+                             texture,      // Source image
+                             texX, 0,      // Source x, y (top of the vertical slice)
+                             1, TEX_HEIGHT,// Source width, height (1 pixel wide slice)
+                             x, drawStart, // Destination x, y on canvas
+                             1, drawEnd - drawStart + 1 // Destination width, height
+                         );
 
+                         // --- Shading & Damage Overlay ---
+                         const health = wallHealth[mapY][mapX];
+                         let shadeFactor = 1.0 - Math.min(perpWallDist / 10, 1) * 0.7; // Dimmer further away, less intense than before
+                         if (side === 1) shadeFactor *= 0.7; // Make NS walls darker
 
-                    // Choose color based on voxel type and health
-                    let baseColor = voxelColors[hit.type];
-                    let finalColor = { ...baseColor }; // Copy base color
+                         // Apply distance/side shading as a semi-transparent black overlay
+                         ctx.fillStyle = `rgba(0, 0, 0, ${1.0 - shadeFactor})`;
+                         ctx.fillRect(x, drawStart, 1, drawEnd - drawStart + 1);
 
-                    const health = voxelHealth[getVoxelIndex(hit.x, hit.y, hit.z)];
-                    if (health > 0 && health < MAX_VOXEL_HEALTH) {
-                        // Lerp towards damage color based on health loss
-                        const damageColor = healthColors[health - 1];
-                        const ratio = (MAX_VOXEL_HEALTH - health) / (MAX_VOXEL_HEALTH -1); // 0 to 1 as health drops
-
-                        // Simplified lerp - might not be visually perfect
-                        finalColor.r = Math.floor(baseColor.r * (1-ratio) + damageColor.r * ratio);
-                        finalColor.g = Math.floor(baseColor.g * (1-ratio) + damageColor.g * ratio);
-                        finalColor.b = Math.floor(baseColor.b * (1-ratio) + damageColor.b * ratio);
+                         // Apply damage tint (semi-transparent red) if health is below max
+                         if (health < MAX_WALL_HEALTH && health > 0) {
+                             const damageAlpha = (1.0 - health / MAX_WALL_HEALTH) * 0.6; // More red as health lowers (max 60% opacity)
+                             ctx.fillStyle = `rgba(255, 0, 0, ${damageAlpha})`;
+                             ctx.fillRect(x, drawStart, 1, drawEnd - drawStart + 1);
+                         }
+                    } else {
+                         // Fallback: Draw colored rectangle if texture missing
+                         let wallColor = 'purple'; // Error color
+                         let shadeFactor = 1.0 - Math.min(perpWallDist / 10, 1);
+                         if (side === 1) shadeFactor *= 0.7;
+                         ctx.fillStyle = `rgba(128, 0, 128, ${shadeFactor})`; // Shaded purple
+                         ctx.fillRect(x, drawStart, 1, drawEnd - drawStart + 1);
                     }
-
-
-                    // Apply simple shading based on face hit and distance
-                    let shade = 1.0 - Math.min(hit.distance / RENDER_DISTANCE, 1.0) * 0.6; // Distance fog/shade
-                    if (hit.face === 1) shade *= 0.7; // Top/Bottom faces darker
-                    else if (hit.face === 0) shade *= 0.85; // X faces slightly darker
-                    // Z faces (face == 2) get full brightness * distance shade
-
-                    const r = Math.max(0, Math.min(255, Math.floor(finalColor.r * shade)));
-                    const g = Math.max(0, Math.min(255, Math.floor(finalColor.g * shade)));
-                    const b = Math.max(0, Math.min(255, Math.floor(finalColor.b * shade)));
-                    offscreenCtx.fillStyle = `rgb(${r},${g},${b})`;
-
-                    // Draw the vertical line (stripe) for this column
-                    offscreenCtx.fillRect(x, clampedStart, 1, clampedEnd - clampedStart + 1);
                 }
             }
 
-             // Draw fog overlay after walls
-             offscreenCtx.fillRect(0, 0, renderWidth, renderHeight);
+             // 4. Draw Weapon
+             if (weaponImg) {
+                 const weaponScale = 0.3; // Adjust size as needed
+                 const weaponWidth = weaponImg.width * weaponScale;
+                 const weaponHeight = weaponImg.height * weaponScale;
+                 const weaponX = screenWidth - weaponWidth - 20; // Position bottom-right
+                 const weaponY = screenHeight - weaponHeight - 10;
+                 ctx.drawImage(weaponImg, weaponX, weaponY, weaponWidth, weaponHeight);
+             }
 
-
-             // --- Draw to main canvas (scaled) ---
-             ctx.imageSmoothingEnabled = false; // Use nearest-neighbor for pixelated look
-             ctx.drawImage(offscreenCanvas, 0, 0, renderWidth, renderHeight, 0, 0, screenWidth, screenHeight);
-
-
-             // Draw crosshair on main canvas
-            const crosshairSize = 15 * (screenWidth / 800); // Scale crosshair
-            const centerX = screenWidth / 2;
-            const centerY = screenHeight / 2;
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.moveTo(centerX - crosshairSize, centerY);
-            ctx.lineTo(centerX + crosshairSize, centerY);
-            ctx.moveTo(centerX, centerY - crosshairSize);
-            ctx.lineTo(centerX, centerY + crosshairSize);
-            ctx.stroke();
+             // 5. Draw Crosshair
+             const crosshairSize = 10;
+             const centerX = screenWidth / 2;
+             const centerY = screenHeight / 2;
+             ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
+             ctx.lineWidth = 2;
+             ctx.beginPath();
+             ctx.moveTo(centerX - crosshairSize, centerY);
+             ctx.lineTo(centerX + crosshairSize, centerY);
+             ctx.moveTo(centerX, centerY - crosshairSize);
+             ctx.lineTo(centerX, centerY + crosshairSize);
+             ctx.stroke();
         }
 
         // --- Shooting Logic ---
         function shoot() {
             if (!pointerLocked) return;
 
-            // Calculate camera direction vector (same as in render)
-            const cosPitch = Math.cos(player.pitch);
-            const sinPitch = Math.sin(player.pitch);
-            const cosYaw = Math.cos(player.yaw);
-            const sinYaw = Math.sin(player.yaw);
-            const camDirX = sinYaw * cosPitch;
-            const camDirY = -sinPitch;
-            const camDirZ = cosYaw * cosPitch;
-            const camY = player.y + player.height / 2; // Use player head height for shooting origin
+            const rayDirX = player.dirX;
+            const rayDirY = player.dirY;
 
-            const hit = traceRay(player.x, camY, player.z, camDirX, camDirY, camDirZ);
+            let mapX = Math.floor(player.x);
+            let mapY = Math.floor(player.y);
 
-            if (hit && hit.distance < 8) { // Max shooting distance
-                console.log(`Hit voxel type ${hit.type} at [${hit.x}, ${hit.y}, ${hit.z}]`);
-                damageVoxel(hit.x, hit.y, hit.z);
+            let sideDistX, sideDistY;
+            const deltaDistX = (rayDirY === 0) ? 1e30 : Math.abs(1 / rayDirX);
+            const deltaDistY = (rayDirX === 0) ? 1e30 : Math.abs(1 / rayDirY);
+            let stepX, stepY;
+            let hit = 0;
+            let hitMapX, hitMapY;
+            const maxShootDist = 10;
+            let currentDist = 0;
+
+            if (rayDirX < 0) { stepX = -1; sideDistX = (player.x - mapX) * deltaDistX; }
+            else { stepX = 1; sideDistX = (mapX + 1.0 - player.x) * deltaDistX; }
+            if (rayDirY < 0) { stepY = -1; sideDistY = (player.y - mapY) * deltaDistY; }
+            else { stepY = 1; sideDistY = (mapY + 1.0 - player.y) * deltaDistY; }
+
+            while (hit === 0 && currentDist < maxShootDist) {
+                if (sideDistX < sideDistY) { currentDist = sideDistX; sideDistX += deltaDistX; mapX += stepX; }
+                else { currentDist = sideDistY; sideDistY += deltaDistY; mapY += stepY; }
+
+                if (mapX < 0 || mapX >= mapWidth || mapY < 0 || mapY >= mapHeight) break;
+                if (map[mapY][mapX] > 0) { hit = 1; hitMapX = mapX; hitMapY = mapY; }
+            }
+
+            if (hit === 1 && wallHealth[hitMapY] && wallHealth[hitMapY][hitMapX] > 0) {
+                wallHealth[hitMapY][hitMapX]--;
+                console.log(`Hit wall at [${hitMapX}, ${hitMapY}] - Health: ${wallHealth[hitMapY][hitMapX]}`);
+                if (wallHealth[hitMapY][hitMapX] <= 0) {
+                    console.log(`Wall at [${hitMapX}, ${hitMapY}] destroyed!`);
+                    map[hitMapY][hitMapX] = 0; // Destroy wall
+                }
             } else {
-                console.log("Missed or out of range.");
+                 console.log("Missed or hit indestructible/empty.");
             }
         }
 
@@ -504,8 +411,7 @@
 
         canvas.addEventListener('click', () => {
             if (!pointerLocked) {
-                canvas.requestPointerLock()
-                    .catch(err => { console.error("Cannot lock pointer:", err); });
+                canvas.requestPointerLock().catch(err => console.error("Pointer lock failed:", err));
             } else {
                 shoot();
             }
@@ -520,7 +426,7 @@
                 pointerLocked = false;
                 instructions.style.display = 'block';
                 document.removeEventListener("mousemove", handleMouseMove, false);
-                for (const key in keys) { keys[key] = false; } // Clear keys on unlock
+                for (const key in keys) { keys[key] = false; }
             }
         });
 
@@ -534,28 +440,37 @@
         function handleMouseMove(e) {
             if (pointerLocked) {
                 mouseDeltaX += e.movementX || 0;
-                mouseDeltaY += e.movementY || 0;
             }
         }
 
-        // Handle window resizing
         window.addEventListener('resize', () => {
             screenWidth = window.innerWidth;
             screenHeight = window.innerHeight;
             canvas.width = screenWidth;
             canvas.height = screenHeight;
-
-            renderWidth = Math.floor(screenWidth * RENDER_SCALE);
-             renderHeight = Math.floor(screenHeight * RENDER_SCALE);
-             offscreenCanvas.width = renderWidth;
-             offscreenCanvas.height = renderHeight;
-            console.log(`Resized to: ${screenWidth}x${screenHeight} (Rendering at ${renderWidth}x${renderHeight})`);
-
+            // Re-create floor pattern if needed (though it should repeat anyway)
+            // if (textures[textureMapIndices.brick]) {
+            //     const patternCanvas = document.createElement('canvas'); /* ... create pattern again ... */
+            // }
         });
 
         // --- Initialization ---
-        createWorld();
-        requestAnimationFrame(gameLoop);
+        console.log("Initializing game...");
+        const { texturePromises: allPromises } = loadTextures();
+
+        Promise.all(allPromises)
+            .then(() => {
+                console.log("All textures loaded successfully.");
+                texturesLoaded = true;
+                initializeWallHealth();
+                loadingScreen.style.display = 'none'; // Hide loading screen
+                instructions.style.display = 'block'; // Show instructions
+                requestAnimationFrame(gameLoop); // Start the game loop
+            })
+            .catch(error => {
+                 console.error("Error loading textures:", error);
+                 loadingScreen.textContent = "Error loading assets. Please refresh.";
+            });
 
     </script>
 </body>
